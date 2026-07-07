@@ -166,15 +166,28 @@ $("file").onchange = async () => {
   }
 };
 
+// 저장소가 한글 등 비영문 파일명을 거부(Invalid key)하므로 안전한 영문 키로 자동 변환
+// — 반영은 파일 내용으로 판별하므로 이름이 바뀌어도 무관
+function safeKey(name){
+  const dot = name.lastIndexOf(".");
+  const ext = (dot >= 0 ? name.slice(dot) : ".xlsx").replace(/[^\w.]/g, "") || ".xlsx";
+  let stem = (dot >= 0 ? name.slice(0, dot) : name).replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  const ts = `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return `${ts}_${stem || "file"}${ext}`;
+}
 $("upBtn").onclick = async () => {
   if(!valid || !curFile) return;
   $("upBtn").disabled = true; $("upMsg").textContent = "업로드 중…";
   const {data:{user}} = await sb.auth.getUser();
-  const path = `${user.id}/${curFile.name}`;
+  const origName = curFile.name;
+  const path = `${user.id}/${safeKey(origName)}`;
   const {error} = await sb.storage.from(BUCKET).upload(path, curFile, {upsert:true, contentType:curFile.type});
   if(error){ $("upMsg").innerHTML = `<span class="bad">업로드 실패 — ${error.message}</span>`; $("upBtn").disabled = false; return; }
-  $("upMsg").innerHTML = `<span class="ok">✔ 업로드 완료 — 기획팀이 취합·반영합니다. 파일: ${curFile.name}</span>`;
-  $("file").value = ""; $("checkBox").innerHTML = ""; curFile = null; valid = false;
+  $("upMsg").innerHTML = `<span class="ok">✔ 업로드 완료 — 기획팀이 취합·반영합니다. 파일: ${origName}</span>`
+    + `<br><span class="who">저장명 ${path.split("/")[1]} (한글 파일명은 자동 영문 변환 — 반영은 내용 기준이라 무관)</span>`;
+  $("file").value = ""; $("checkBox").innerHTML = ""; curFile = null; valid = false; $("upBtn").disabled = true;
   loadRecent(user);
 };
 
