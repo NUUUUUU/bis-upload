@@ -81,8 +81,8 @@ const BUCKET = "uploads";
 /* ========================================================= */
 
 /*__VALIDATE_START__*/
-// 파일 서식 판별 — admin_server.detect()와 동일 시그니처(시트명 + 1~2행 헤더 합집합)
-function validateWorkbook(sheetNames, headers){
+// 파일 서식 판별 — admin_server.detect()와 동일 시그니처(시트명 + 1~2행 헤더 합집합 + 사업단위 값)
+function validateWorkbook(sheetNames, headers, biz){
   const has = n => sheetNames.includes(n);
   const hh = (n, k) => (headers[n] || []).includes(k);
   if(has("Global 고정 환율") && has("KR") && has("TH"))
@@ -96,6 +96,19 @@ function validateWorkbook(sheetNames, headers){
     "EG_구매입고":"구매 — 이집트","CN_외주입고":"외주 — 중국","TH_외주입고":"외주 — 태국","EG_외주입고":"외주 — 이집트",
     "TH_수입입고":"수입 — 태국","EG_수입입고":"수입 — 이집트","KR_수입입고":"수입 — 한국"};
   for(const s of sheetNames) if(PUR[s]) return {ok:true, kind:PUR[s], sheet:s};
+  // 시트명이 Sheet1 등이어도 원본 ERP 구매·외주·수입은 헤더 유형 + 사업단위 값으로 판별
+  const BIZNM = {SSKR:"한국", SSTH:"태국", SSCN:"중국", SSEG:"이집트"};
+  for(const s of sheetNames){
+    const h = headers[s] || [];
+    if(!h.includes("사업단위")) continue;
+    let kind = null;
+    if(h.includes("수입입고번호")) kind = "수입";
+    else if(h.includes("외주입고번호") || h.includes("외주입고일")) kind = "외주";
+    else if(h.includes("구매거래처") || h.includes("입고번호")) kind = "구매";
+    if(!kind) continue;
+    const b = (biz || {})[s];
+    return {ok:true, kind:`${kind} — ${BIZNM[b] || "법인 자동 인식"} (내용 판별)`, sheet:s};
+  }
   for(const s of sheetNames){  // 시트명이 달라도 헤더로 최후 판별(매출 단독시트)
     if(hh(s,"거래명세서일")){
       if(hh(s,"수출구분")) return {ok:true, kind:"매출 원장 — 한국(헤더 판별)", sheet:s};
@@ -108,16 +121,23 @@ function validateWorkbook(sheetNames, headers){
 
 async function readSignature(file){
   const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, {type:"array", sheetRows:2});  // 1~2행만 읽어 빠르게
+  const wb = XLSX.read(buf, {type:"array", sheetRows:12});  // 헤더(1~2행) + 사업단위 값 표본(~12행)
   const sheetNames = wb.SheetNames;
-  const headers = {};
+  const headers = {}, biz = {};
   for(const s of sheetNames){
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[s], {header:1, blankrows:false}).slice(0,2);
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[s], {header:1, blankrows:false});
     const set = new Set();
-    for(const r of rows) for(const c of r) if(c != null && String(c).trim() !== "") set.add(String(c).trim());
+    for(const r of rows.slice(0,2)) for(const c of r) if(c != null && String(c).trim() !== "") set.add(String(c).trim());
     headers[s] = [...set];
+    for(const r of rows.slice(2)){  // 데이터에서 사업단위(SSTH 등) 값 탐색
+      for(const c of (r||[]).slice(0,8)){
+        const v = c != null ? String(c).trim() : "";
+        if(/^SS(KR|TH|CN|EG)$/.test(v)){ biz[s] = v; break; }
+      }
+      if(biz[s]) break;
+    }
   }
-  return {sheetNames, headers};
+  return {sheetNames, headers, biz};
 }
 
 const $ = id => document.getElementById(id);
@@ -178,8 +198,8 @@ async function previewFile(f, sheetName){
 // 여러 파일 동시 선택 지원 — 파일마다 개별 검증·미리보기, 통과분만 일괄 업로드
 async function checkOne(f){
   try{
-    const {sheetNames, headers} = await readSignature(f);
-    const v = validateWorkbook(sheetNames, headers);
+    const {sheetNames, headers, biz} = await readSignature(f);
+    const v = validateWorkbook(sheetNames, headers, biz);
     if(!v.ok) return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — ${v.reason}</div>`};
     let extra = "";
     if(!v.nopreview && f.size <= 30*1024*1024){
