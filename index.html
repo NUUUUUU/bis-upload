@@ -53,8 +53,8 @@ button:disabled{opacity:.45;cursor:default}
 
   <div class="card hide" id="upCard">
     <h2>② 파일 업로드 <span class="who" id="who"></span></h2>
-    <label for="file">엑셀 파일 (.xlsx) — ERP에서 내려받은 원본 그대로</label>
-    <input id="file" type="file" accept=".xlsx">
+    <label for="file">엑셀 파일 (.xlsx) — ERP에서 내려받은 원본 그대로 · <b>여러 개 선택 가능</b>(Ctrl/Shift 클릭)</label>
+    <input id="file" type="file" accept=".xlsx" multiple>
     <div id="checkBox"></div>
     <button id="upBtn" disabled>업로드</button>
     <button id="logoutBtn" class="ghost">로그아웃</button>
@@ -121,7 +121,7 @@ async function readSignature(file){
 
 const $ = id => document.getElementById(id);
 const configured = SUPABASE_URL.indexOf("supabase.co") >= 0 && !SUPABASE_ANON_KEY.startsWith("__");
-let sb = null, curFile = null, valid = false;
+let sb = null, curFiles = [];  // {file, ok, html} — 다중 선택 파일별 검증 결과
 
 if(!configured){ $("setupWarn").classList.remove("hide"); }
 else { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); init(); }
@@ -174,62 +174,75 @@ async function previewFile(f, sheetName){
   return {rows: cnt, months: [...months].sort()};
 }
 
-$("file").onchange = async () => {
-  const f = $("file").files[0]; curFile = f; valid = false; $("upBtn").disabled = true;
-  const box = $("checkBox"); box.innerHTML = "";
-  if(!f) return;
-  box.innerHTML = `<div class="check">서식 확인 중…</div>`;
+// 여러 파일 동시 선택 지원 — 파일마다 개별 검증·미리보기, 통과분만 일괄 업로드
+async function checkOne(f){
   try{
     const {sheetNames, headers} = await readSignature(f);
     const v = validateWorkbook(sheetNames, headers);
-    if(!v.ok){
-      box.innerHTML = `<div class="check fail">✘ 서식 불일치 — ${v.reason}<br>ERP에서 올바른 파일을 다시 내려받아 올려주세요.</div>`;
-      return;
-    }
+    if(!v.ok) return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — ${v.reason}</div>`};
     let extra = "";
     if(!v.nopreview && f.size <= 30*1024*1024){
       const pv = await previewFile(f, v.sheet);
-      if(pv && pv.rows === 0){
-        box.innerHTML = `<div class="check fail">✘ 데이터가 0행입니다(빈 파일) — 올바른 파일인지 확인해 주세요.</div>`;
-        return;
-      }
+      if(pv && pv.rows === 0)
+        return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — 데이터가 0행(빈 파일)</div>`};
       if(pv){
         const mm = pv.months;
         const span = mm.length ? (mm.length === 1 ? mm[0] : `${mm[0]} ~ ${mm[mm.length-1]}`) + ` · ${mm.length}개월분` : "";
-        extra = `<br>내용: <b>${pv.rows.toLocaleString()}행</b>${span ? " · " + span : ""} — 올리려는 기간이 맞는지 확인하세요.`;
+        extra = ` · ${pv.rows.toLocaleString()}행${span ? " · " + span : ""}`;
       }
     } else if(!v.nopreview){
-      extra = `<br>대용량 파일 — 기간 미리보기는 생략합니다.`;
+      extra = " · 대용량(미리보기 생략)";
     }
-    valid = true; $("upBtn").disabled = false;
-    box.innerHTML = `<div class="check pass">✔ 서식 통과 — <b>${v.kind}</b>${extra}<br>업로드 버튼을 눌러 제출하세요.</div>`;
+    return {file:f, ok:true, html:`<div class="check pass">✔ ${f.name}<br><b>${v.kind}</b>${extra}</div>`};
   }catch(e){
-    box.innerHTML = `<div class="check fail">파일을 읽지 못했습니다 (${String(e).slice(0,80)}). .xlsx 파일인지 확인하세요.</div>`;
+    return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — 읽기 실패(${String(e).slice(0,60)})</div>`};
   }
+}
+$("file").onchange = async () => {
+  const fs = [...$("file").files]; curFiles = []; $("upBtn").disabled = true;
+  const box = $("checkBox"); box.innerHTML = "";
+  if(!fs.length) return;
+  box.innerHTML = `<div class="check">서식 확인 중… (${fs.length}개 파일)</div>`;
+  const parts = [];
+  for(const f of fs){ const r = await checkOne(f); curFiles.push(r); parts.push(r.html); }
+  const okN = curFiles.filter(x => x.ok).length;
+  const head = fs.length > 1
+    ? `<div class="check ${okN ? "pass" : "fail"}" style="font-weight:800">${fs.length}개 중 ${okN}개 통과${okN < fs.length ? ` · ${fs.length - okN}개 반려(아래 ✘ — 업로드에서 제외됨)` : ""}</div>` : "";
+  box.innerHTML = head + parts.join("");
+  $("upBtn").disabled = okN === 0;
+  $("upBtn").textContent = okN > 1 ? `업로드 (${okN}개)` : "업로드";
 };
 
 // 저장소가 한글 등 비영문 파일명을 거부(Invalid key)하므로 안전한 영문 키로 자동 변환
 // — 반영은 파일 내용으로 판별하므로 이름이 바뀌어도 무관
-function safeKey(name){
+function safeKey(name, i){
   const dot = name.lastIndexOf(".");
   const ext = (dot >= 0 ? name.slice(dot) : ".xlsx").replace(/[^\w.]/g, "") || ".xlsx";
   let stem = (dot >= 0 ? name.slice(0, dot) : name).replace(/[^A-Za-z0-9._-]+/g, "_")
     .replace(/_+/g, "_").replace(/^_+|_+$/g, "");
   const d = new Date(), p = n => String(n).padStart(2, "0");
   const ts = `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-  return `${ts}_${stem || "file"}${ext}`;
+  return `${ts}${i ? "-" + i : ""}_${stem || "file"}${ext}`;  // 같은 초 다중 업로드 충돌 방지용 순번
 }
 $("upBtn").onclick = async () => {
-  if(!valid || !curFile) return;
-  $("upBtn").disabled = true; $("upMsg").textContent = "업로드 중…";
+  const targets = curFiles.filter(x => x.ok);
+  if(!targets.length) return;
+  $("upBtn").disabled = true;
   const {data:{user}} = await sb.auth.getUser();
-  const origName = curFile.name;
-  const path = `${user.id}/${safeKey(origName)}`;
-  const {error} = await sb.storage.from(BUCKET).upload(path, curFile, {upsert:true, contentType:curFile.type});
-  if(error){ $("upMsg").innerHTML = `<span class="bad">업로드 실패 — ${error.message}</span>`; $("upBtn").disabled = false; return; }
-  $("upMsg").innerHTML = `<span class="ok">✔ 업로드 완료 — 기획팀이 취합·반영합니다. 파일: ${origName}</span>`
-    + `<br><span class="who">저장명 ${path.split("/")[1]} (한글 파일명은 자동 영문 변환 — 반영은 내용 기준이라 무관)</span>`;
-  $("file").value = ""; $("checkBox").innerHTML = ""; curFile = null; valid = false; $("upBtn").disabled = true;
+  const lines = [];
+  for(let i = 0; i < targets.length; i++){
+    const f = targets[i].file;
+    $("upMsg").innerHTML = lines.join("<br>") + (lines.length ? "<br>" : "") + `업로드 중… (${i+1}/${targets.length}) ${f.name}`;
+    const path = `${user.id}/${safeKey(f.name, i)}`;
+    const {error} = await sb.storage.from(BUCKET).upload(path, f, {upsert:true, contentType:f.type});
+    lines.push(error
+      ? `<span class="bad">✘ ${f.name} — 업로드 실패(${error.message})</span>`
+      : `<span class="ok">✔ ${f.name} 업로드 완료</span> <span class="who">저장명 ${path.split("/")[1]}</span>`);
+  }
+  const okN = lines.filter(l => l.includes("✔")).length;
+  $("upMsg").innerHTML = lines.join("<br>")
+    + `<br><b>${okN}/${targets.length}개 완료</b> — 기획팀이 취합·반영합니다. (한글 파일명은 자동 영문 변환 — 반영은 내용 기준이라 무관)`;
+  $("file").value = ""; $("checkBox").innerHTML = ""; curFiles = []; $("upBtn").disabled = true; $("upBtn").textContent = "업로드";
   loadRecent(user);
 };
 
