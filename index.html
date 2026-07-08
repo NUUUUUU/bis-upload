@@ -100,6 +100,8 @@ function validateWorkbook(sheetNames, headers, biz){
   const BIZNM = {SSKR:"한국", SSTH:"태국", SSCN:"중국", SSEG:"이집트"};
   for(const s of sheetNames){
     const h = headers[s] || [];
+    if(h.includes("작업일") && h.includes("외주거래처") && h.includes("외주계약단가"))
+      return {ok:true, kind:"외주 — 중국 (내용 판별 · 용역비 화면)", sheet:s};
     if(!h.includes("사업단위")) continue;
     let kind = null;
     if(h.includes("수입입고번호")) kind = "수입";
