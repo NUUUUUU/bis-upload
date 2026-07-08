@@ -25,6 +25,7 @@ button:disabled{opacity:.45;cursor:default}
 .check{border-radius:10px;padding:10px 12px;margin-top:11px;font-size:12.8px;font-weight:600}
 .check.pass{background:#EAF6EE;color:var(--ok)}
 .check.fail{background:#FBEEEC;color:var(--bad)}
+.check.warn{background:#FFF8E6;color:var(--warn)}
 .who{font-size:12px;color:var(--muted)}
 .list{margin-top:6px;font-size:12px}
 .list .row{display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--line)}
@@ -195,7 +196,12 @@ async function checkOne(f){
     }
     return {file:f, ok:true, html:`<div class="check pass">✔ ${f.name}<br><b>${v.kind}</b>${extra}</div>`};
   }catch(e){
-    return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — 읽기 실패(${String(e).slice(0,60)})</div>`};
+    // 파일 자체를 못 읽는 경우(폴더 선택·OneDrive 온라인전용 등)만 반려
+    if(e && (e.name === "NotFoundError" || e.name === "NotReadableError" || String(e).includes("NotFoundError")))
+      return {file:f, ok:false, html:`<div class="check fail">✘ ${f.name} — 파일을 읽을 수 없습니다.<br>폴더가 아닌 엑셀 파일인지, OneDrive '온라인 전용'이면 파일을 한 번 열어 내려받은 뒤 다시 시도하세요.</div>`};
+    // 브라우저 파서 한계로 검증만 불가한 경우 — 업로드는 허용, 최종 판정은 기획팀 취합 시 서버가 수행
+    return {file:f, ok:true, unverified:true,
+      html:`<div class="check warn">△ ${f.name} — 브라우저에서 내용 확인 불가(파일은 정상일 수 있음)<br>업로드는 진행되며, 기획팀 취합 단계에서 서버가 정밀 검증합니다.</div>`};
   }
 }
 $("file").onchange = async () => {
@@ -206,8 +212,9 @@ $("file").onchange = async () => {
   const parts = [];
   for(const f of fs){ const r = await checkOne(f); curFiles.push(r); parts.push(r.html); }
   const okN = curFiles.filter(x => x.ok).length;
+  const unv = curFiles.filter(x => x.unverified).length;
   const head = fs.length > 1
-    ? `<div class="check ${okN ? "pass" : "fail"}" style="font-weight:800">${fs.length}개 중 ${okN}개 통과${okN < fs.length ? ` · ${fs.length - okN}개 반려(아래 ✘ — 업로드에서 제외됨)` : ""}</div>` : "";
+    ? `<div class="check ${okN ? "pass" : "fail"}" style="font-weight:800">${fs.length}개 중 ${okN}개 업로드 가능${unv ? ` (검증 불가 △ ${unv}개 포함)` : ""}${okN < fs.length ? ` · ${fs.length - okN}개 반려(✘ — 제외됨)` : ""}</div>` : "";
   box.innerHTML = head + parts.join("");
   $("upBtn").disabled = okN === 0;
   $("upBtn").textContent = okN > 1 ? `업로드 (${okN}개)` : "업로드";
