@@ -85,20 +85,20 @@ function validateWorkbook(sheetNames, headers){
   const has = n => sheetNames.includes(n);
   const hh = (n, k) => (headers[n] || []).includes(k);
   if(has("Global 고정 환율") && has("KR") && has("TH"))
-    return {ok:true, kind:"관리손익 + 환율 (Back Data 통짜)"};
+    return {ok:true, kind:"관리손익 + 환율 (Back Data 통짜)", nopreview:true};
   const pl = ["KR_pl","TH_pl","CN_pl","EG_pl"].filter(has);
-  if(pl.length) return {ok:true, kind:`관리손익 P&L (${pl.length}/4 시트)`};
+  if(pl.length) return {ok:true, kind:`관리손익 P&L (${pl.length}/4 시트)`, nopreview:true};
   const ov = ["SSCN","SSTH","SSEG"].filter(has);
-  if(ov.length && hh(ov[0],"거래명세서일")) return {ok:true, kind:"매출 원장 — 해외법인(SSCN·SSTH·SSEG)"};
-  if(has("KR") && hh("KR","거래명세서일") && hh("KR","수출구분")) return {ok:true, kind:"매출 원장 — 한국사업부"};
+  if(ov.length && hh(ov[0],"거래명세서일")) return {ok:true, kind:"매출 원장 — 해외법인(SSCN·SSTH·SSEG)", sheet:ov[0]};
+  if(has("KR") && hh("KR","거래명세서일") && hh("KR","수출구분")) return {ok:true, kind:"매출 원장 — 한국사업부", sheet:"KR"};
   const PUR = {"KR_구매외주입고":"구매/외주 — 한국","CN_구매입고":"구매 — 중국","TH_구매입고":"구매 — 태국",
     "EG_구매입고":"구매 — 이집트","CN_외주입고":"외주 — 중국","TH_외주입고":"외주 — 태국","EG_외주입고":"외주 — 이집트",
     "TH_수입입고":"수입 — 태국","EG_수입입고":"수입 — 이집트","KR_수입입고":"수입 — 한국"};
-  for(const s of sheetNames) if(PUR[s]) return {ok:true, kind:PUR[s]};
+  for(const s of sheetNames) if(PUR[s]) return {ok:true, kind:PUR[s], sheet:s};
   for(const s of sheetNames){  // 시트명이 달라도 헤더로 최후 판별(매출 단독시트)
     if(hh(s,"거래명세서일")){
-      if(hh(s,"수출구분")) return {ok:true, kind:"매출 원장 — 한국(헤더 판별)"};
-      if(hh(s,"Local구분")) return {ok:true, kind:"매출 원장 — 해외(헤더 판별)"};
+      if(hh(s,"수출구분")) return {ok:true, kind:"매출 원장 — 한국(헤더 판별)", sheet:s};
+      if(hh(s,"Local구분")) return {ok:true, kind:"매출 원장 — 해외(헤더 판별)", sheet:s};
     }
   }
   return {ok:false, reason:"표준 서식(시트·헤더)과 맞지 않습니다 — 시트: " + sheetNames.slice(0,6).join(", ")};
@@ -147,6 +147,33 @@ function showApp(user){
   loadRecent(user);
 }
 
+// 업로드 전 내용 미리보기 — 담당자가 "무엇을(몇 행·몇 월분) 올리는지" 스스로 확인
+async function previewFile(f, sheetName){
+  const buf = await f.arrayBuffer();
+  const wb = XLSX.read(buf, {type:"array", cellDates:true});
+  const ws = wb.Sheets[sheetName || wb.SheetNames[0]]; if(!ws) return null;
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, blankrows:false});
+  const CAND = ["거래명세서일","입고일","입고일자","작업일"];
+  let hr = -1, dc = -1;
+  for(let r = 0; r < Math.min(3, rows.length); r++){
+    const idx = (rows[r]||[]).findIndex(c => CAND.includes(String(c).trim()));
+    if(idx >= 0){ hr = r; dc = idx; break; }
+  }
+  const dataRows = rows.slice((hr >= 0 ? hr : 1) + 1).filter(r => r && r.length);
+  const months = new Set();
+  let cnt = 0;
+  for(const r of dataRows){
+    if(dc < 0){ cnt++; continue; }
+    const v = r[dc]; if(v == null || v === "") continue;
+    cnt++;
+    let ym = null;
+    if(v instanceof Date && !isNaN(v)) ym = `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,"0")}`;
+    else { const s = String(v).replace(/[./]/g,"-"); const m = s.match(/^(\d{4})-(\d{1,2})/); if(m) ym = `${m[1]}-${m[2].padStart(2,"0")}`; }
+    if(ym) months.add(ym);
+  }
+  return {rows: cnt, months: [...months].sort()};
+}
+
 $("file").onchange = async () => {
   const f = $("file").files[0]; curFile = f; valid = false; $("upBtn").disabled = true;
   const box = $("checkBox"); box.innerHTML = "";
@@ -155,12 +182,27 @@ $("file").onchange = async () => {
   try{
     const {sheetNames, headers} = await readSignature(f);
     const v = validateWorkbook(sheetNames, headers);
-    if(v.ok){
-      valid = true; $("upBtn").disabled = false;
-      box.innerHTML = `<div class="check pass">✔ 서식 통과 — <b>${v.kind}</b><br>업로드 버튼을 눌러 제출하세요.</div>`;
-    } else {
+    if(!v.ok){
       box.innerHTML = `<div class="check fail">✘ 서식 불일치 — ${v.reason}<br>ERP에서 올바른 파일을 다시 내려받아 올려주세요.</div>`;
+      return;
     }
+    let extra = "";
+    if(!v.nopreview && f.size <= 30*1024*1024){
+      const pv = await previewFile(f, v.sheet);
+      if(pv && pv.rows === 0){
+        box.innerHTML = `<div class="check fail">✘ 데이터가 0행입니다(빈 파일) — 올바른 파일인지 확인해 주세요.</div>`;
+        return;
+      }
+      if(pv){
+        const mm = pv.months;
+        const span = mm.length ? (mm.length === 1 ? mm[0] : `${mm[0]} ~ ${mm[mm.length-1]}`) + ` · ${mm.length}개월분` : "";
+        extra = `<br>내용: <b>${pv.rows.toLocaleString()}행</b>${span ? " · " + span : ""} — 올리려는 기간이 맞는지 확인하세요.`;
+      }
+    } else if(!v.nopreview){
+      extra = `<br>대용량 파일 — 기간 미리보기는 생략합니다.`;
+    }
+    valid = true; $("upBtn").disabled = false;
+    box.innerHTML = `<div class="check pass">✔ 서식 통과 — <b>${v.kind}</b>${extra}<br>업로드 버튼을 눌러 제출하세요.</div>`;
   }catch(e){
     box.innerHTML = `<div class="check fail">파일을 읽지 못했습니다 (${String(e).slice(0,80)}). .xlsx 파일인지 확인하세요.</div>`;
   }
