@@ -102,7 +102,14 @@ function validateWorkbook(sheetNames, headers, biz){
     const h = headers[s] || [];
     if(h.includes("작업일") && h.includes("외주거래처") && h.includes("외주계약단가"))
       return {ok:true, kind:"외주 — 중국 (내용 판별 · 용역비 화면)", sheet:s};
-    if(!h.includes("사업단위")) continue;
+    if(!h.includes("사업단위")){
+      // 한국 원본 ERP — 국내 화면에는 사업단위 컬럼이 없다: 헤더 조합으로 확정
+      if(h.includes("입고번호") && h.includes("정산구분") && h.includes("내외자구분"))
+        return {ok:true, kind:"구매/외주 — 한국 (내용 판별)", sheet:s};
+      if(h.includes("수입입고번호") && h.includes("Vendor"))
+        return {ok:true, kind:"수입 — 한국 (내용 판별)", sheet:s};
+      continue;
+    }
     let kind = null;
     if(h.includes("수입입고번호")) kind = "수입";
     else if(h.includes("외주입고번호") || h.includes("외주입고일")) kind = "외주";
